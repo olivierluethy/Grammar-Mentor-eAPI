@@ -106,7 +106,18 @@ if (strlen($text) < 10 || strlen($text) > 15000) {
     exit;
 }
 
-$allowedModes = ['Authentic (errors only)', 'Academic writing', 'Business professional'];
+$allowedModes = [
+    'Authentic (errors only)',
+    'Academic writing',
+    'Business professional',
+    'Creative Preservation',
+    'Simple & Clear',
+    'Scientific Precision',
+    'Persuasive & Influential',
+    'Friendly & Conversational',
+    'SEO-Optimized'
+];
+
 if (!in_array($mode, $allowedModes, true)) {
     http_response_code(400);
     echo json_encode(["error" => "Invalid correction mode"]);
@@ -130,9 +141,32 @@ $client = OpenAI::client($apiKey);
 // Dynamic prompt
 // ============================================================================
 $styleInstruction = match ($mode) {
-    'Academic writing'      => "Use formal, precise academic style. Avoid contractions. Prefer passive voice where appropriate.",
-    'Business professional' => "Use clear, concise, polite and professional business tone.",
-    default                 => "Preserve the original personal voice and style. Only correct actual errors – do not rewrite stylistically unless clearly incorrect."
+    'Academic writing' =>
+        "Use formal, precise academic style. Avoid contractions. Prefer passive voice where appropriate.",
+
+    'Business professional' =>
+        "Use clear, concise, polite and professional business tone.",
+
+    'Creative Preservation' =>
+        "Preserve creative style, imagery, and emotional tone. Do not flatten or neutralize expressive language.",
+
+    'Simple & Clear' =>
+        "Rewrite only where necessary to improve clarity and readability. Prefer short, direct sentences and simple vocabulary.",
+
+    'Scientific Precision' =>
+        "Use highly precise, objective, and unambiguous scientific language. Avoid figurative expressions and ensure terminological consistency.",
+
+    'Persuasive & Influential' =>
+    "Use persuasive language, emphasize benefits, include clear calls-to-action, and reinforce reader motivation. Keep tone confident and engaging.",
+
+    'Friendly & Conversational' =>
+        "Use natural, friendly, and conversational tone. Short sentences, warmth, and everyday phrasing. Avoid overly formal language.",
+
+    'SEO-Optimized' =>
+        "Adjust text for readability and search relevance. Improve structure and keyword placement for online discoverability.",
+
+    default =>
+        "Preserve the original personal voice and style. Only correct actual errors – do not rewrite stylistically unless clearly incorrect."
 };
 
 $langInstruction = $language === 'Auto-detect language' ? "" : "The text is written in $language.";
