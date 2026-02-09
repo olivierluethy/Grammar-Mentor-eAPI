@@ -1,261 +1,512 @@
 <?php
-require_once __DIR__ . '/vendor/autoload.php';
+/**
+ * Grammar Checker API - Enhanced Version
+ * 
+ * Features:
+ * - Multilingual support with auto-detection
+ * - Style and tone preservation
+ * - Grammar rule explanations with examples
+ * - Writing style customization
+ * - Tone adjustment
+ */
 
-use OpenAI;
+error_reporting(E_ALL);
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
+ini_set('error_log', '/tmp/php-error.log');
 
-// ============================================================================
-// CORS – IMPORTANT: must be set BEFORE any output
-// ============================================================================
-$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+header('Content-Type: application/json');
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: POST, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type');
 
-// Trusted production origins (add www. variant if needed)
-$trusted_origins = [
-    'https://grammar-mentor.com',
-    'https://www.grammar-mentor.com',
-];
-
-// Allow localhost during development
-$dev_origins = [
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
-    'http://localhost:5173',     // Vite default
-    'http://127.0.0.1:5173',
-];
-
-$allowed_origins = array_merge($trusted_origins, $dev_origins);
-
-if (in_array($origin, $allowed_origins, true)) {
-    header("Access-Control-Allow-Origin: $origin");
-    header('Vary: Origin');           // Required when reflecting Origin
-} else {
-    // Fallback – still allow production (but reject others in strict mode)
-    header("Access-Control-Allow-Origin: https://grammar-mentor.com");
-}
-
-header("Access-Control-Allow-Methods: POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type");
-header("Access-Control-Max-Age: 86400");     // cache preflight 24h
-
-// Handle CORS preflight (OPTIONS) request
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(204);
-    exit;
+    http_response_code(200);
+    exit();
 }
 
-// Only allow POST after preflight
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
-    echo json_encode(["error" => "Method not allowed. Use POST."]);
-    exit;
+    echo json_encode(['error' => 'Method not allowed. Use POST.']);
+    exit();
 }
 
-// ============================================================================
-// Rate Limiting (file-based – keep as is for now)
-// ============================================================================
-$rateLimitFile = __DIR__ . '/rate-limit.json';
-$ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
-$maxRequests = 20;
-$timeWindow  = 5 * 60;
+// ========================================
+// CONFIGURATION
+// ========================================
+define('OPENAI_API_KEY', '__REDACTED_OPENAI_KEY__'); // *** REPLACE WITH YOUR API KEY ***
+define('OPENAI_API_URL', 'https://api.openai.com/v1/chat/completions');
+define('MODEL', 'gpt-4o-mini');
+define('MAX_TOKENS', 3000);
+define('TEMPERATURE', 0.3);
 
-$rateData = file_exists($rateLimitFile) ? json_decode(file_get_contents($rateLimitFile), true) : [];
-
-if (!isset($rateData[$ip])) {
-    $rateData[$ip] = ['count' => 0, 'resetTime' => time() + $timeWindow];
-}
-
-if (time() > $rateData[$ip]['resetTime']) {
-    $rateData[$ip] = ['count' => 0, 'resetTime' => time() + $timeWindow];
-}
-
-$rateData[$ip]['count']++;
-
-if ($rateData[$ip]['count'] > $maxRequests) {
-    http_response_code(429);
-    echo json_encode([
-        "error"      => "Rate limit exceeded",
-        "retryAfter" => $rateData[$ip]['resetTime'] - time(),
-        "limit"      => $maxRequests,
-        "window"     => $timeWindow . " seconds"
-    ]);
-    file_put_contents($rateLimitFile, json_encode($rateData));
-    exit;
-}
-
-file_put_contents($rateLimitFile, json_encode($rateData), LOCK_EX);
-
-// ============================================================================
-// Read & validate input
-// ============================================================================
-header("Content-Type: application/json");
-
-$input = json_decode(file_get_contents("php://input"), true);
-
-if (json_last_error() !== JSON_ERROR_NONE) {
-    http_response_code(400);
-    echo json_encode(["error" => "Invalid JSON"]);
-    exit;
-}
-
-$text     = trim($input['text'] ?? '');
-$mode     = trim($input['mode'] ?? 'Authentic (errors only)');
-$language = trim($input['language'] ?? 'Auto-detect language');
-
-if (strlen($text) < 10 || strlen($text) > 15000) {
-    http_response_code(400);
-    echo json_encode(["error" => "Text length must be between 10 and 15,000 characters"]);
-    exit;
-}
-
-$allowedModes = [
-    'Authentic (errors only)',
-    'Academic writing',
-    'Business professional',
-    'Creative Preservation',
-    'Simple & Clear',
-    'Scientific Precision',
-    'Persuasive & Influential',
-    'Friendly & Conversational',
-    'SEO-Optimized'
+// Language names for display
+$LANGUAGE_NAMES = [
+    'en' => 'English',
+    'es' => 'Spanish',
+    'fr' => 'French',
+    'de' => 'German',
+    'it' => 'Italian',
+    'pt' => 'Portuguese',
+    'nl' => 'Dutch',
+    'pl' => 'Polish',
+    'ru' => 'Russian',
+    'zh' => 'Chinese',
+    'ja' => 'Japanese',
+    'ko' => 'Korean',
+    'ar' => 'Arabic'
 ];
 
-if (!in_array($mode, $allowedModes, true)) {
-    http_response_code(400);
-    echo json_encode(["error" => "Invalid correction mode"]);
-    exit;
-}
-
-// ============================================================================
-// OpenAI setup
-// ============================================================================
-$apiKey = '__REDACTED_OPENAI_KEY__';
-
-if (empty($apiKey)) {
+// ========================================
+// MAIN EXECUTION
+// ========================================
+try {
+    $input = json_decode(file_get_contents('php://input'), true);
+    
+    // Check if this is a rule request
+    if (isset($input['action']) && $input['action'] === 'get_rule') {
+        $rule = getGrammarRule($input['correction']);
+        echo json_encode([
+            'success' => true,
+            'rule' => $rule
+        ], JSON_PRETTY_PRINT);
+        exit();
+    }
+    
+    // Normal grammar check request
+    if (!isset($input['text']) || empty(trim($input['text']))) {
+        throw new Exception('No text provided');
+    }
+    
+    $text = trim($input['text']);
+    $language = isset($input['language']) ? $input['language'] : 'auto';
+    $style = isset($input['style']) ? $input['style'] : 'neutral';
+    $tone = isset($input['tone']) ? $input['tone'] : 'preserve';
+    
+    if (strlen($text) > 10000) {
+        throw new Exception('Text is too long. Maximum 10,000 characters.');
+    }
+    
+    if (OPENAI_API_KEY === 'YOUR_OPENAI_API_KEY') {
+        throw new Exception('OpenAI API key not configured. Please update the API file with your key.');
+    }
+    
+    // Analyze grammar with enhanced features
+    $result = analyzeGrammarEnhanced($text, $language, $style, $tone);
+    
+    echo json_encode([
+        'success' => true,
+        'corrections' => $result['corrections'],
+        'detected_language' => $result['detected_language'],
+        'text_length' => strlen($text),
+        'issues_found' => count($result['corrections']),
+        'model_used' => MODEL
+    ], JSON_PRETTY_PRINT);
+    
+} catch (Exception $e) {
     http_response_code(500);
-    echo json_encode(["error" => "Server configuration error – API key missing"]);
-    exit;
+    echo json_encode([
+        'error' => $e->getMessage(),
+        'success' => false
+    ]);
+    error_log('Grammar API Error: ' . $e->getMessage());
 }
 
-$client = OpenAI::client($apiKey);
+// ========================================
+// ENHANCED GRAMMAR ANALYSIS
+// ========================================
 
-// ============================================================================
-// Dynamic prompt
-// ============================================================================
-$styleInstruction = match ($mode) {
-    'Academic writing' =>
-        "Use formal, precise academic style. Avoid contractions. Prefer passive voice where appropriate.",
+function analyzeGrammarEnhanced($text, $language, $style, $tone) {
+    global $LANGUAGE_NAMES;
+    
+    // Build the system prompt with all parameters
+    $systemPrompt = buildEnhancedSystemPrompt($language, $style, $tone);
+    $userPrompt = "Please analyze this text:\n\n" . $text;
+    
+    $requestData = [
+        'model' => MODEL,
+        'messages' => [
+            [
+                'role' => 'system',
+                'content' => $systemPrompt
+            ],
+            [
+                'role' => 'user',
+                'content' => $userPrompt
+            ]
+        ],
+        'temperature' => TEMPERATURE,
+        'max_tokens' => MAX_TOKENS
+    ];
+    
+    $ch = curl_init(OPENAI_API_URL);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($requestData));
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        'Content-Type: application/json',
+        'Authorization: Bearer ' . OPENAI_API_KEY
+    ]);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
+    
+    curl_close($ch);
+    
+    if ($curlError) {
+        throw new Exception('cURL error: ' . $curlError);
+    }
+    
+    if ($httpCode !== 200) {
+        $errorData = json_decode($response, true);
+        $errorMessage = 'OpenAI API error (HTTP ' . $httpCode . ')';
+        
+        if (isset($errorData['error']['message'])) {
+            $errorMessage = $errorData['error']['message'];
+        }
+        
+        throw new Exception($errorMessage);
+    }
+    
+    $result = json_decode($response, true);
+    
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        throw new Exception('Failed to parse API response: ' . json_last_error_msg());
+    }
+    
+    if (!isset($result['choices'][0]['message']['content'])) {
+        throw new Exception('Invalid API response format');
+    }
+    
+    $content = trim($result['choices'][0]['message']['content']);
+    
+    // Clean markdown
+    $content = preg_replace('/^```json\s*/m', '', $content);
+    $content = preg_replace('/^```\s*/m', '', $content);
+    $content = preg_replace('/\s*```$/m', '', $content);
+    $content = trim($content);
+    
+    $data = json_decode($content, true);
+    
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        error_log('JSON Parse Error: ' . json_last_error_msg());
+        error_log('Content: ' . substr($content, 0, 500));
+        throw new Exception('Failed to parse AI response');
+    }
+    
+    if (!is_array($data)) {
+        throw new Exception('Invalid response format');
+    }
+    
+    // Extract corrections and detected language
+    $corrections = isset($data['corrections']) ? $data['corrections'] : $data;
+    $detectedLang = isset($data['detected_language']) ? $data['detected_language'] : 'en';
+    
+    // Validate corrections
+    $validCorrections = validateCorrections($corrections, $text);
+    
+    return [
+        'corrections' => $validCorrections,
+        'detected_language' => $detectedLang
+    ];
+}
 
-    'Business professional' =>
-        "Use clear, concise, polite and professional business tone.",
+// ========================================
+// BUILD ENHANCED SYSTEM PROMPT
+// ========================================
 
-    'Creative Preservation' =>
-        "Preserve creative style, imagery, and emotional tone. Do not flatten or neutralize expressive language.",
+function buildEnhancedSystemPrompt($language, $style, $tone) {
+    $languageInstruction = '';
+    if ($language === 'auto') {
+        $languageInstruction = 'FIRST detect the language of the text and include it in your response as "detected_language". Then analyze the text in that language.';
+    } else {
+        $languageInstruction = "The text is in language code: $language. Analyze it accordingly.";
+    }
+    
+    $styleInstruction = getStyleInstruction($style);
+    $toneInstruction = getToneInstruction($tone);
+    
+    $prompt = "You are a professional multilingual grammar and style checker.
 
-    'Simple & Clear' =>
-        "Rewrite only where necessary to improve clarity and readability. Prefer short, direct sentences and simple vocabulary.",
+LANGUAGE HANDLING:
+$languageInstruction
 
-    'Scientific Precision' =>
-        "Use highly precise, objective, and unambiguous scientific language. Avoid figurative expressions and ensure terminological consistency.",
+WRITING STYLE:
+$styleInstruction
 
-    'Persuasive & Influential' =>
-    "Use persuasive language, emphasize benefits, include clear calls-to-action, and reinforce reader motivation. Keep tone confident and engaging.",
+TONE ADJUSTMENT:
+$toneInstruction
 
-    'Friendly & Conversational' =>
-        "Use natural, friendly, and conversational tone. Short sentences, warmth, and everyday phrasing. Avoid overly formal language.",
+CRITICAL INSTRUCTIONS:
+- Preserve the author's original voice, personality, and writing style
+- Do NOT make corrections sound robotic, generic, or overly formal
+- Maintain natural flow and authenticity
+- Corrections should improve clarity without changing the writer's character
+- Respect cultural and linguistic nuances
 
-    'SEO-Optimized' =>
-        "Adjust text for readability and search relevance. Improve structure and keyword placement for online discoverability.",
+For EACH error you find, provide:
+1. original: The exact text with the error (as it appears in input)
+2. correction: The corrected version (preserving style and tone)
+3. explanation: Brief, clear explanation
+4. position: Character position where error starts (0-based)
+5. rule_name: Short name of the grammar rule (e.g., 'Subject-Verb Agreement', 'Apostrophe Usage')
 
-    default =>
-        "Preserve the original personal voice and style. Only correct actual errors – do not rewrite stylistically unless clearly incorrect."
-};
-
-$langInstruction = $language === 'Auto-detect language' ? "" : "The text is written in $language.";
-
-$prompt = <<<PROMPT
-You are a precise grammar mentor that corrects mistakes while preserving the writer's personal voice and intent.
-
-Rules:
-- ONLY correct clear grammar, spelling, punctuation, agreement, word choice errors.
-- Do NOT change meaning, tone, vocabulary level, or sentence structure unless it's clearly wrong.
-- $styleInstruction
-- $langInstruction
-- For EVERY correction provide a short, friendly, educational explanation.
-
-Input text:
-"""
-$text
-"""
-
-Return **JSON only** – no other text:
-
+Return ONLY valid JSON in this format:
 {
-  "originalText": "the full original text (unchanged)",
-  "correctedText": "the full corrected version",
-  "errors": [
+  \"detected_language\": \"en\",
+  \"corrections\": [
     {
-      "start": number (0-based character index in originalText),
-      "end": number (exclusive),
-      "wrong": "the original wrong substring",
-      "suggestion": "the corrected substring",
-      "message": "Short, friendly explanation why this was wrong and why the suggestion is better"
-    },
-    ...
+      \"original\": \"error text\",
+      \"correction\": \"fixed text\",
+      \"explanation\": \"why it's wrong\",
+      \"position\": 0,
+      \"rule_name\": \"Grammar Rule Name\"
+    }
   ]
 }
 
-If no corrections are needed, return an empty "errors" array.
-PROMPT;
+If no errors found, return: {\"detected_language\": \"en\", \"corrections\": []}
 
-// ============================================================================
-// Call OpenAI
-// ============================================================================
-try {
-    $response = $client->chat()->create([
-        'model'       => 'gpt-4o-mini',
-        'messages'    => [
-            ['role' => 'system', 'content' => 'You are a helpful grammar expert. Respond with valid JSON only.'],
-            ['role' => 'user',   'content' => $prompt],
-        ],
-        'temperature' => 0.12,
-        'max_tokens'  => 4096,
-        'response_format' => ['type' => 'json_object'],
-    ]);
+DO NOT include markdown, preambles, or any text outside the JSON.";
 
-    $content = $response['choices'][0]['message']['content'] ?? '';
+    return $prompt;
+}
 
-    $result = json_decode($content, true);
+function getStyleInstruction($style) {
+    $styles = [
+        'neutral' => 'Maintain a balanced, natural tone suitable for general writing.',
+        'formal' => 'Ensure corrections follow formal writing conventions, suitable for business or academic contexts.',
+        'casual' => 'Keep corrections conversational and relaxed, as you would speak to a friend.',
+        'academic' => 'Apply academic writing standards with precision and scholarly tone.',
+        'creative' => 'Preserve creative expression and artistic language choices.',
+        'professional' => 'Maintain professional business communication standards.',
+        'conversational' => 'Keep the natural flow of spoken language and personal voice.'
+    ];
+    
+    return isset($styles[$style]) ? $styles[$style] : $styles['neutral'];
+}
 
-    if (json_last_error() !== JSON_ERROR_NONE || !is_array($result)) {
-        throw new Exception("OpenAI response was not valid JSON");
+function getToneInstruction($tone) {
+    $tones = [
+        'preserve' => 'Preserve the original tone exactly as written. Do not alter the author\'s voice.',
+        'natural' => 'Improve flow to sound more natural and conversational, but avoid making it artificial or stiff.',
+        'confident' => 'Strengthen weak phrasings to sound more assertive and confident.',
+        'friendly' => 'Warm up the tone slightly to sound more approachable and friendly.',
+        'concise' => 'Tighten wordy phrases to be more direct and concise.'
+    ];
+    
+    return isset($tones[$tone]) ? $tones[$tone] : $tones['preserve'];
+}
+
+// ========================================
+// VALIDATE CORRECTIONS
+// ========================================
+
+function validateCorrections($corrections, $text) {
+    if (!is_array($corrections)) {
+        return [];
     }
+    
+    $validCorrections = [];
+    
+    foreach ($corrections as $correction) {
+        if (!isset($correction['original']) || 
+            !isset($correction['correction']) || 
+            !isset($correction['explanation']) || 
+            !isset($correction['position'])) {
+            continue;
+        }
+        
+        $pos = (int)$correction['position'];
+        $original = $correction['original'];
+        $originalLength = strlen($original);
+        
+        if ($pos < 0 || $pos >= strlen($text)) {
+            continue;
+        }
+        
+        $actualText = substr($text, $pos, $originalLength);
+        
+        if ($actualText === $original) {
+            $validCorrections[] = [
+                'original' => $original,
+                'correction' => $correction['correction'],
+                'explanation' => $correction['explanation'],
+                'position' => $pos,
+                'rule_name' => isset($correction['rule_name']) ? $correction['rule_name'] : 'Grammar Error',
+                'ignored' => false
+            ];
+        } elseif (strcasecmp($actualText, $original) === 0) {
+            $validCorrections[] = [
+                'original' => $actualText,
+                'correction' => $correction['correction'],
+                'explanation' => $correction['explanation'],
+                'position' => $pos,
+                'rule_name' => isset($correction['rule_name']) ? $correction['rule_name'] : 'Grammar Error',
+                'ignored' => false
+            ];
+        } else {
+            $foundPos = strpos($text, $original, max(0, $pos - 50));
+            if ($foundPos !== false) {
+                $validCorrections[] = [
+                    'original' => $original,
+                    'correction' => $correction['correction'],
+                    'explanation' => $correction['explanation'],
+                    'position' => $foundPos,
+                    'rule_name' => isset($correction['rule_name']) ? $correction['rule_name'] : 'Grammar Error',
+                    'ignored' => false
+                ];
+            } else {
+                $foundPos = stripos($text, $original);
+                if ($foundPos !== false) {
+                    $actualText = substr($text, $foundPos, $originalLength);
+                    $validCorrections[] = [
+                        'original' => $actualText,
+                        'correction' => $correction['correction'],
+                        'explanation' => $correction['explanation'],
+                        'position' => $foundPos,
+                        'rule_name' => isset($correction['rule_name']) ? $correction['rule_name'] : 'Grammar Error',
+                        'ignored' => false
+                    ];
+                }
+            }
+        }
+    }
+    
+    usort($validCorrections, function($a, $b) {
+        return $a['position'] - $b['position'];
+    });
+    
+    $deduplicated = [];
+    $seen = [];
+    
+    foreach ($validCorrections as $correction) {
+        $key = $correction['position'] . '|' . $correction['original'];
+        if (!isset($seen[$key])) {
+            $deduplicated[] = $correction;
+            $seen[$key] = true;
+        }
+    }
+    
+    return $deduplicated;
+}
 
-    // Minimal logging
-    $logLine = sprintf(
-        "%s | IP: %s | Mode: %s | Lang: %s | Len: %d | Errors: %d | Tokens: %d\n",
-        date('c'),
-        $ip,
-        $mode,
-        $language,
-        strlen($text),
-        count($result['errors'] ?? []),
-        $response['usage']['total_tokens'] ?? 0
-    );
-    file_put_contents(__DIR__ . '/grammar-api.log', $logLine, FILE_APPEND);
+// ========================================
+// GET DETAILED GRAMMAR RULE
+// ========================================
 
-    http_response_code(200);
-    echo json_encode([
-        'status' => 'success',
-        'data'   => $result,
-        'model'  => $response['model'],
-        'usage'  => $response['usage'] ?? null,
+function getGrammarRule($correction) {
+    $systemPrompt = "You are a grammar teacher. Provide a detailed explanation of a grammar rule with examples.
+
+The user made this error:
+- Original: {$correction['original']}
+- Correction: {$correction['correction']}
+- Brief explanation: {$correction['explanation']}
+- Rule name: {$correction['rule_name']}
+
+Provide:
+1. A detailed explanation of WHY this is an error and the rule involved
+2. 3-4 CORRECT examples demonstrating proper usage
+3. 3-4 INCORRECT examples showing common mistakes
+4. A simple multiple-choice quiz question to test understanding
+
+Return ONLY valid JSON in this format:
+{
+  \"explanation\": \"Detailed explanation of the rule...\",
+  \"correct_examples\": [
+    \"First correct example sentence.\",
+    \"Second correct example sentence.\",
+    \"Third correct example sentence.\"
+  ],
+  \"incorrect_examples\": [
+    \"First incorrect example sentence.\",
+    \"Second incorrect example sentence.\",
+    \"Third incorrect example sentence.\"
+  ],
+  \"quiz\": {
+    \"question\": \"Which sentence is correct?\",
+    \"options\": [
+      \"Option A text\",
+      \"Option B text\",
+      \"Option C text\",
+      \"Option D text\"
+    ],
+    \"correct\": 0
+  }
+}
+
+DO NOT include markdown, explanations, or any text outside the JSON.";
+
+    $requestData = [
+        'model' => MODEL,
+        'messages' => [
+            [
+                'role' => 'system',
+                'content' => $systemPrompt
+            ],
+            [
+                'role' => 'user',
+                'content' => 'Explain this grammar rule.'
+            ]
+        ],
+        'temperature' => 0.4,
+        'max_tokens' => 1500
+    ];
+    
+    $ch = curl_init(OPENAI_API_URL);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($requestData));
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        'Content-Type: application/json',
+        'Authorization: Bearer ' . OPENAI_API_KEY
     ]);
-
-} catch (Exception $e) {
-    error_log("OpenAI Grammar Error: " . $e->getMessage());
-
-    http_response_code(503);
-    echo json_encode([
-        "error"   => "AI analysis temporarily unavailable",
-        "details" => "Please try again in a moment"
-    ]);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 20);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    
+    curl_close($ch);
+    
+    if ($httpCode !== 200) {
+        throw new Exception('Could not fetch rule details');
+    }
+    
+    $result = json_decode($response, true);
+    
+    if (!isset($result['choices'][0]['message']['content'])) {
+        throw new Exception('Invalid response');
+    }
+    
+    $content = trim($result['choices'][0]['message']['content']);
+    
+    // Clean markdown
+    $content = preg_replace('/^```json\s*/m', '', $content);
+    $content = preg_replace('/^```\s*/m', '', $content);
+    $content = preg_replace('/\s*```$/m', '', $content);
+    $content = trim($content);
+    
+    $rule = json_decode($content, true);
+    
+    if (json_last_error() !== JSON_ERROR_NONE || !is_array($rule)) {
+        // Fallback if parsing fails
+        return [
+            'explanation' => $correction['explanation'],
+            'correct_examples' => [
+                'Example 1: ' . $correction['correction'],
+                'Example 2: Similar correct usage.',
+                'Example 3: Another correct usage.'
+            ],
+            'incorrect_examples' => [
+                'Example 1: ' . $correction['original'],
+                'Example 2: Similar incorrect usage.',
+                'Example 3: Another incorrect usage.'
+            ],
+            'quiz' => null
+        ];
+    }
+    
+    return $rule;
 }
