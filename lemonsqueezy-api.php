@@ -8,6 +8,8 @@
  * - User authentication
  */
 
+require_once __DIR__ . '/config.php';
+
 // Enable error reporting for development (disable in production)
 error_reporting(E_ALL);
 ini_set('display_errors', 0); // Set to 0 in production
@@ -30,20 +32,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 // CONFIGURATION
 // ============================================
 
-define('LEMONSQUEEZY_API_KEY', '__REDACTED_JWT__');
 define('LEMONSQUEEZY_API_URL', 'https://api.lemonsqueezy.com/v1');
 
 // Product variant IDs
-define('VARIANT_MONTHLY', '824475');
-define('VARIANT_YEARLY', '824478');
-define('VARIANT_2YEAR', '824483');
-define('VARIANT_LIFETIME', '824489');
+define('VARIANT_MONTHLY', '827000');
+define('VARIANT_YEARLY', '827003');
+define('VARIANT_LIFETIME', '826999');
 
 // Checkout URLs
-define('CHECKOUT_MONTHLY', 'https://grammar-mentor.lemonsqueezy.com/checkout/buy/cbb95cf4-1ecc-4032-a73c-79b6f771ed33');
-define('CHECKOUT_YEARLY', 'https://grammar-mentor.lemonsqueezy.com/checkout/buy/fc3e92b7-331e-4af5-a2cd-4a12a5f5f33a');
-define('CHECKOUT_2YEAR', 'https://grammar-mentor.lemonsqueezy.com/checkout/buy/f2f898f3-5680-4656-8221-3f0e6936cf0b');
-define('CHECKOUT_LIFETIME', 'https://grammar-mentor.lemonsqueezy.com/checkout/buy/2ab2920a-9841-417b-908e-f924e76252af');
+define('CHECKOUT_MONTHLY', 'https://grammar-mentor.lemonsqueezy.com/checkout/buy/f1ea24e6-4964-46a0-b442-3a659f76ed5a');
+define('CHECKOUT_YEARLY', 'https://grammar-mentor.lemonsqueezy.com/checkout/buy/4f3f8322-6efa-41d6-b884-8176cbcac195');
+define('CHECKOUT_LIFETIME', 'https://grammar-mentor.lemonsqueezy.com/checkout/buy/d9b6bd65-57d6-47eb-851e-47278b468439');
 
 // ============================================
 // HELPER FUNCTIONS
@@ -339,33 +338,49 @@ function handleLoginWithEmail() {
 
     logActivity('Email-Login Versuch', ['email' => $email]);
 
-    // ==================================================
-    // HIER KOMMEN SPÄTER DEINE ECHTE ABFRAGELOGIK
-    // ==================================================
-    // Für den Moment: Wir geben einfach jedem Pro-Zugang
-    // (ideal zum Testen – später durch DB/Webhook-Abfrage ersetzen)
+    try {
+        $pdo = new PDO(
+    "mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=utf8mb4",
+    DB_USER,
+    DB_PASS,
+    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+);
 
-    $hasPaid = true;                    // ← nur zum Testen!
-    // $hasPaid = $db->userHasActiveSubscription($email);  // spätere echte Abfrage
+        $stmt = $pdo->prepare("
+            SELECT plan, status, valid_until 
+            FROM subscriptions 
+            WHERE email = ? 
+            LIMIT 1
+        ");
+        $stmt->execute([$email]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    if ($hasPaid) {
-        $plan = 'pro';                  // oder 'lifetime' – je nach Kauf
-        $validUntil = date('Y-m-d', strtotime('+1 year'));  // Beispiel
+        if ($row && $row['status'] === 'active') {
+            $plan = $row['plan'];
+            $validUntil = $row['valid_until'] 
+                ?? date('Y-m-d', strtotime('+1 year'));  // realistischerer Fallback
 
+            sendResponse([
+                'success'    => true,
+                'valid'      => true,
+                'email'      => $email,
+                'name'       => explode('@', $email)[0] ?: 'User',
+                'status'     => 'active',
+                'plan'       => $plan,
+                'validUntil' => $validUntil
+            ]);
+        } else {
+            sendResponse([
+                'success' => true,
+                'valid'   => false,
+                'error'   => 'Mit dieser E-Mail ist aktuell kein aktives Pro-Abo verknüpft. Upgrade jetzt?'
+            ]);
+        }
+    } catch (PDOException $e) {
+        error_log("DB Fehler in login_with_email: " . $e->getMessage());
         sendResponse([
-            'success'    => true,
-            'valid'      => true,
-            'email'      => $email,
-            'name'       => explode('@', $email)[0] ?: 'User',
-            'status'     => 'active',
-            'plan'       => $plan,
-            'validUntil' => $validUntil
-        ]);
-    } else {
-        sendResponse([
-            'success'    => true,
-            'valid'      => false,
-            'error'      => 'Kein aktives Pro-Abo für diese E-Mail gefunden. Bitte upgrade zuerst.'
-        ]);
+            'success' => false,
+            'error'   => 'Technischer Fehler – bitte versuche es später erneut'
+        ], 500);
     }
 }
