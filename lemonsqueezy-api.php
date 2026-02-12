@@ -151,11 +151,17 @@ switch ($action) {
     case 'get_config':
         handleGetConfig();
         break;
-    
+
+    // ── NEU ────────────────────────────────────────
+    case 'login_with_email':
+        handleLoginWithEmail();
+        break;
+    // ───────────────────────────────────────────────
+
     default:
         sendResponse([
             'success' => false,
-            'error' => 'Invalid action. Available actions: validate_license, check_subscription, get_checkout_url, get_config'
+            'error' => 'Invalid action. Available actions: validate_license, check_subscription, get_checkout_url, get_config, login_with_email'
         ], 400);
 }
 
@@ -169,69 +175,73 @@ switch ($action) {
  * Body: { "email": "user@example.com", "licenseKey": "XXXX-XXXX-XXXX-XXXX" }
  */
 function handleValidateLicense() {
-    // Get POST data
     $input = json_decode(file_get_contents('php://input'), true);
     
-    $email = $input['email'] ?? '';
-    $licenseKey = $input['licenseKey'] ?? '';
+    $email      = trim($input['email'] ?? '');
+    $licenseKey = trim($input['licenseKey'] ?? '');
     
     if (empty($email) || empty($licenseKey)) {
         sendResponse([
             'success' => false,
-            'error' => 'Email and license key are required'
+            'error'   => 'Email and license key are required'
         ], 400);
     }
     
-    logActivity('License validation attempt', ['email' => $email]);
+    logActivity('License validation attempt', ['email' => $email, 'key_prefix' => substr($licenseKey, 0, 8) . '...']);
     
-    // Call Lemon Squeezy API to validate license
     $response = lemonsqueezyRequest('/licenses/validate', 'POST', [
         'license_key' => $licenseKey,
-        'instance_name' => $email
+        // instance_id nur anhängen, wenn du später aktivierst und die Instanz-ID speicherst
+        // 'instance_id'  => $someStoredInstanceId   // ← optional / später
     ]);
     
     if (isset($response['error'])) {
+        logActivity('API request failed', ['error' => $response['error']]);
         sendResponse([
             'success' => false,
-            'error' => 'Failed to validate license: ' . $response['error']
-        ], 500);
+            'error'   => 'License validation failed: ' . ($response['error'] ?? 'Unknown API error')
+        ], 502);
     }
     
-    // Check if license is valid and active
-    $isValid = $response['valid'] ?? false;
-    $licenseStatus = $response['license_key']['status'] ?? 'inactive';
+    $data         = $response['data'] ?? [];
+    $license      = $data['attributes'] ?? [];
+    $isValid      = $response['valid'] ?? false;
+    $status       = $license['status'] ?? 'inactive';
+    $expiresAt    = $license['expires_at'] ?? null;
+    $variantId    = $response['meta']['variant_id'] ?? null;
+    $customerName = $response['meta']['customer_name'] ?? explode('@', $email)[0] ?? 'User';
     
-    if ($isValid && $licenseStatus === 'active') {
-        // Get subscription details
-        $variantId = $response['meta']['variant_id'] ?? null;
-        $customerName = $response['meta']['customer_name'] ?? explode('@', $email)[0];
-        $expiresAt = $response['license_key']['expires_at'] ?? null;
-        
+    if ($isValid && $status === 'active') {
         $plan = determinePlan($variantId);
         
-        logActivity('License validation successful', [
+        logActivity('Valid license', [
             'email' => $email,
-            'plan' => $plan
+            'plan'  => $plan,
+            'expires_at' => $expiresAt
         ]);
         
         sendResponse([
-            'success' => true,
-            'valid' => true,
-            'email' => $email,
-            'name' => $customerName,
-            'status' => 'active',
-            'plan' => $plan,
+            'success'    => true,
+            'valid'      => true,
+            'email'      => $email,
+            'name'       => $customerName,
+            'status'     => 'active',
+            'plan'       => $plan,
             'validUntil' => $expiresAt,
-            'variantId' => $variantId
+            'variantId'  => $variantId,
+            // Falls du später Instances trackst:
+            // 'instance_id' => $license['instance_id'] ?? null
         ]);
     } else {
-        logActivity('License validation failed', ['email' => $email, 'status' => $licenseStatus]);
+        logActivity('Invalid license', ['status' => $status, 'valid' => $isValid]);
+        
+        $errorMsg = $status !== 'active' ? "License is {$status}" : 'License not valid';
         
         sendResponse([
-            'success' => true,
-            'valid' => false,
-            'error' => 'Invalid or inactive license key'
-        ]);
+            'success' => false,
+            'valid'   => false,
+            'error'   => $errorMsg
+        ], 200);   // 200 weil Frontend das als normale Antwort behandeln soll
     }
 }
 
@@ -309,4 +319,53 @@ function handleGetConfig() {
             'lifetime' => VARIANT_LIFETIME
         ]
     ]);
+}
+
+/**
+ * Einfacher E-Mail-Login ohne License-Key
+ * POST: ?action=login_with_email
+ * Body: { "email": "user@example.com" }
+ */
+function handleLoginWithEmail() {
+    $input = json_decode(file_get_contents('php://input'), true);
+    $email = trim($input['email'] ?? '');
+
+    if (empty($email) || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        sendResponse([
+            'success' => false,
+            'error'   => 'Bitte eine gültige E-Mail-Adresse angeben'
+        ], 400);
+    }
+
+    logActivity('Email-Login Versuch', ['email' => $email]);
+
+    // ==================================================
+    // HIER KOMMEN SPÄTER DEINE ECHTE ABFRAGELOGIK
+    // ==================================================
+    // Für den Moment: Wir geben einfach jedem Pro-Zugang
+    // (ideal zum Testen – später durch DB/Webhook-Abfrage ersetzen)
+
+    $hasPaid = true;                    // ← nur zum Testen!
+    // $hasPaid = $db->userHasActiveSubscription($email);  // spätere echte Abfrage
+
+    if ($hasPaid) {
+        $plan = 'pro';                  // oder 'lifetime' – je nach Kauf
+        $validUntil = date('Y-m-d', strtotime('+1 year'));  // Beispiel
+
+        sendResponse([
+            'success'    => true,
+            'valid'      => true,
+            'email'      => $email,
+            'name'       => explode('@', $email)[0] ?: 'User',
+            'status'     => 'active',
+            'plan'       => $plan,
+            'validUntil' => $validUntil
+        ]);
+    } else {
+        sendResponse([
+            'success'    => true,
+            'valid'      => false,
+            'error'      => 'Kein aktives Pro-Abo für diese E-Mail gefunden. Bitte upgrade zuerst.'
+        ]);
+    }
 }
