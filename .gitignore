@@ -1,0 +1,29 @@
+# Konfigurationsdateien mit sensiblen Daten
+config.php
+*.env
+.env
+.env.local
+.env.example
+
+# Logs und temporäre Dateien
+*.log
+error.log
+webhook-events.log
+webhook-errors.log
+
+# PHP Storm / VS Code / Editor temporäre Dateien
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Lokale Entwicklungsumgebungen
+vendor/
+node_modules/
+.DS_Store
+Thumbs.db
+
+# Sonstige sensible Dateien
+*.pem
+*.key
+*.crt
