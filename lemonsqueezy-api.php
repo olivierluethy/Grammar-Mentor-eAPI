@@ -371,14 +371,14 @@ function handleLoginWithEmail() {
             sendResponse([
                 'success' => true,
                 'valid'   => false,
-                'error'   => 'Mit dieser E-Mail ist aktuell kein aktives Pro-Abo verknüpft. Upgrade jetzt?'
+                'error'   => 'There is currently no active Pro subscription associated with this email address. Upgrade now?'
             ]);
         }
     } catch (PDOException $e) {
         error_log("DB Fehler in login_with_email: " . $e->getMessage());
         sendResponse([
             'success' => false,
-            'error'   => 'Technischer Fehler – bitte versuche es später erneut'
+            'error'   => 'Technical error – please try again later'
         ], 500);
     }
 }
