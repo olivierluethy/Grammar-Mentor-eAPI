@@ -6,6 +6,17 @@
  * Place this file at: grammar-mentor.com/webhook.php
  */
 
+require_once __DIR__ . '/config.php';
+
+function getDB() {
+    return new PDO(
+        "mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=utf8mb4",
+        DB_USER,
+        DB_PASS,
+        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+    );
+}
+
 // Enable error logging
 error_reporting(E_ALL);
 ini_set('display_errors', 0); // Never display errors for webhooks
@@ -13,7 +24,7 @@ ini_set('log_errors', 1);
 ini_set('error_log', __DIR__ . '/webhook-errors.log');
 
 // Webhook signing secret
-define('WEBHOOK_SECRET', 'queryzillepg');
+define('WEBHOOK_SECRET', 'pL9qR2tV4xW6yZ8aB0cD2eF4gH6jK8');
 
 // Log file for webhook events
 define('WEBHOOK_LOG', __DIR__ . '/webhook-events.log');
@@ -60,10 +71,9 @@ function determinePlan($variantId) {
     
     // Product variant IDs
     $variants = [
-        '824489' => 'lifetime', // Lifetime
-        '824483' => 'pro',      // 2 years
-        '824478' => 'pro',      // Yearly
-        '824475' => 'pro'       // Monthly
+        '826999' => 'lifetime', // Lifetime
+        '827003' => 'yearly',   // Yearly
+        '827000' => 'monthly'   // Monthly
     ];
     
     return $variants[$variantId] ?? 'free';
@@ -163,92 +173,69 @@ sendResponse('OK', 200);
  */
 function handleSubscriptionCreated($data) {
     $attributes = $data['attributes'] ?? [];
-    
+
     $email = $attributes['user_email'] ?? '';
     $subscriptionId = $attributes['id'] ?? '';
     $variantId = $attributes['variant_id'] ?? '';
-    $status = $attributes['status'] ?? '';
-    $endsAt = $attributes['ends_at'] ?? null;
-    $renewsAt = $attributes['renews_at'] ?? null;
-    
+    $status = $attributes['status'] ?? 'active';
+
     $plan = determinePlan($variantId);
-    
-    logWebhook('✅ SUBSCRIPTION CREATED', [
-        'email' => $email,
-        'subscription_id' => $subscriptionId,
-        'plan' => $plan,
-        'variant_id' => $variantId,
-        'status' => $status,
-        'renews_at' => $renewsAt
-    ]);
-    
-    // TODO: Update your database
-    // Example:
-    /*
-    $db = new PDO('mysql:host=localhost;dbname=grammar_mentor', 'username', 'password');
+
+    logWebhook('✅ SUBSCRIPTION CREATED', compact('email','subscriptionId','plan'));
+
+    $db = getDB();
     $stmt = $db->prepare("
-        INSERT INTO users (email, subscription_id, subscription_status, subscription_plan, variant_id, subscription_ends_at, created_at)
-        VALUES (:email, :sub_id, :status, :plan, :variant_id, :ends_at, NOW())
+        INSERT INTO subscriptions 
+            (email, plan, status, lemon_subscription_id, created_at)
+        VALUES 
+            (:email, :plan, :status, :sub_id, NOW())
         ON DUPLICATE KEY UPDATE
-            subscription_id = :sub_id,
-            subscription_status = :status,
-            subscription_plan = :plan,
-            variant_id = :variant_id,
-            subscription_ends_at = :ends_at,
+            plan = :plan,
+            status = :status,
+            lemon_subscription_id = :sub_id,
             updated_at = NOW()
     ");
+
     $stmt->execute([
         'email' => $email,
-        'sub_id' => $subscriptionId,
-        'status' => $status,
         'plan' => $plan,
-        'variant_id' => $variantId,
-        'ends_at' => $endsAt
+        'status' => $status,
+        'sub_id' => $subscriptionId
     ]);
-    */
-    
-    // TODO: Send welcome email to user
+
     sendWelcomeEmail($email, $plan);
 }
+
 
 /**
  * Handle subscription updates
  */
 function handleSubscriptionUpdated($data) {
     $attributes = $data['attributes'] ?? [];
-    
+
     $email = $attributes['user_email'] ?? '';
     $subscriptionId = $attributes['id'] ?? '';
-    $status = $attributes['status'] ?? '';
     $variantId = $attributes['variant_id'] ?? '';
-    
+    $status = $attributes['status'] ?? 'active';
+
     $plan = determinePlan($variantId);
-    
-    logWebhook('🔄 SUBSCRIPTION UPDATED', [
-        'email' => $email,
-        'subscription_id' => $subscriptionId,
-        'status' => $status,
-        'plan' => $plan
-    ]);
-    
-    // TODO: Update database
-    /*
-    $db = new PDO('mysql:host=localhost;dbname=grammar_mentor', 'username', 'password');
+
+    $db = getDB();
     $stmt = $db->prepare("
-        UPDATE users 
-        SET subscription_status = :status,
-            subscription_plan = :plan,
-            variant_id = :variant_id,
+        UPDATE subscriptions
+        SET plan = :plan,
+            status = :status,
+            lemon_subscription_id = :sub_id,
             updated_at = NOW()
-        WHERE subscription_id = :sub_id
+        WHERE email = :email
     ");
+
     $stmt->execute([
-        'status' => $status,
+        'email' => $email,
         'plan' => $plan,
-        'variant_id' => $variantId,
+        'status' => $status,
         'sub_id' => $subscriptionId
     ]);
-    */
 }
 
 /**
@@ -256,32 +243,19 @@ function handleSubscriptionUpdated($data) {
  */
 function handleSubscriptionEnded($data) {
     $attributes = $data['attributes'] ?? [];
-    
     $email = $attributes['user_email'] ?? '';
-    $subscriptionId = $attributes['id'] ?? '';
-    $status = $attributes['status'] ?? '';
-    
-    logWebhook('❌ SUBSCRIPTION ENDED', [
-        'email' => $email,
-        'subscription_id' => $subscriptionId,
-        'status' => $status
-    ]);
-    
-    // TODO: Update database to revoke access
-    /*
-    $db = new PDO('mysql:host=localhost;dbname=grammar_mentor', 'username', 'password');
+
+    $db = getDB();
     $stmt = $db->prepare("
-        UPDATE users 
-        SET subscription_status = 'cancelled',
-            updated_at = NOW()
+        UPDATE subscriptions
+        SET status = 'cancelled'
         WHERE email = :email
     ");
     $stmt->execute(['email' => $email]);
-    */
-    
-    // TODO: Send cancellation feedback email
+
     sendCancellationEmail($email);
 }
+
 
 /**
  * Handle successful payment
@@ -340,43 +314,40 @@ function handlePaymentRecovered($data) {
  */
 function handleOrderCreated($data) {
     $attributes = $data['attributes'] ?? [];
-    
+
     $email = $attributes['user_email'] ?? '';
     $orderId = $attributes['id'] ?? '';
     $variantId = $attributes['first_order_item']['variant_id'] ?? '';
-    
+
     $plan = determinePlan($variantId);
-    
-    logWebhook('🛒 ORDER CREATED', [
-        'email' => $email,
-        'order_id' => $orderId,
-        'plan' => $plan,
-        'variant_id' => $variantId
-    ]);
-    
-    // For lifetime purchases, grant permanent access
+
+    logWebhook('🛒 ORDER CREATED', compact('email','orderId','plan'));
+
     if ($plan === 'lifetime') {
-        // TODO: Update database with lifetime access
-        /*
-        $db = new PDO('mysql:host=localhost;dbname=grammar_mentor', 'username', 'password');
+        $db = getDB();
+
         $stmt = $db->prepare("
-            INSERT INTO users (email, subscription_status, subscription_plan, variant_id, created_at)
-            VALUES (:email, 'active', 'lifetime', :variant_id, NOW())
+            INSERT INTO subscriptions 
+                (email, plan, status, lemon_order_id, created_at)
+            VALUES 
+                (:email, 'lifetime', 'active', :order_id, NOW())
             ON DUPLICATE KEY UPDATE
-                subscription_status = 'active',
-                subscription_plan = 'lifetime',
-                variant_id = :variant_id,
+                plan = 'lifetime',
+                status = 'active',
+                lemon_order_id = :order_id,
                 updated_at = NOW()
         ");
+
         $stmt->execute([
             'email' => $email,
-            'variant_id' => $variantId
+            'order_id' => $orderId
         ]);
-        */
-        
+
         sendLifetimeWelcomeEmail($email);
     }
 }
+
+
 
 /**
  * Handle license key creation

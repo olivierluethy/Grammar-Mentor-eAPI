@@ -96,11 +96,10 @@ function determinePlan($variantId) {
     $variantId = strval($variantId);
     
     switch ($variantId) {
-        case VARIANT_LIFETIME:
+        case '826999':
             return 'lifetime';
-        case VARIANT_2YEAR:
-        case VARIANT_YEARLY:
-        case VARIANT_MONTHLY:
+        case '827000':   // monthly
+        case '827003':   // yearly
             return 'pro';
         default:
             return 'free';
@@ -314,7 +313,6 @@ function handleGetConfig() {
         'variantIds' => [
             'monthly' => VARIANT_MONTHLY,
             'yearly' => VARIANT_YEARLY,
-            '2year' => VARIANT_2YEAR,
             'lifetime' => VARIANT_LIFETIME
         ]
     ]);
