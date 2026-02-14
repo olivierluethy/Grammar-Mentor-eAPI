@@ -7,6 +7,8 @@
  */
 
 require_once __DIR__ . '/config.php';
+file_put_contents(__DIR__.'/PING.txt', "Webhook hit\n", FILE_APPEND);
+
 
 function getDB() {
     return new PDO(
@@ -67,16 +69,18 @@ function sendResponse($message, $statusCode = 200) {
  * Determine plan from variant ID
  */
 function determinePlan($variantId) {
-    $variantId = strval($variantId);
-    
-    // Product variant IDs
-    $variants = [
-        '826999' => 'lifetime', // Lifetime
-        '827003' => 'yearly',   // Yearly
-        '827000' => 'monthly'   // Monthly
-    ];
-    
-    return $variants[$variantId] ?? 'free';
+    $variantId = (int) $variantId;   // wichtig: Integer erzwingen!
+
+    switch ($variantId) {
+        case 1303448:
+            return 'lifetime';
+        case 1303449:   // monthly
+        case 1303454:   // yearly
+            return 'pro';
+        default:
+            error_log("Webhook: unbekannte variant_id → $variantId");
+            return 'free';
+    }
 }
 
 // ============================================
@@ -87,7 +91,10 @@ function determinePlan($variantId) {
 $payload = file_get_contents('php://input');
 
 // Get the signature from headers
-$signature = $_SERVER['HTTP_X_SIGNATURE'] ?? '';
+$signature = $_SERVER['HTTP_X_SIGNATURE']
+          ?? $_SERVER['HTTP_X_SIGNATURE']
+          ?? '';
+
 
 // Log the incoming webhook
 logWebhook('Webhook received', [
@@ -167,41 +174,85 @@ sendResponse('OK', 200);
 // ============================================
 // EVENT HANDLERS
 // ============================================
-
 /**
- * Handle new subscription creation
+ * Handle new subscription creation (recurring plans: monthly / yearly)
  */
-function handleSubscriptionCreated($data) {
+function handleSubscriptionCreated($data)
+{
     $attributes = $data['attributes'] ?? [];
 
-    $email = $attributes['user_email'] ?? '';
-    $subscriptionId = $attributes['id'] ?? '';
-    $variantId = $attributes['variant_id'] ?? '';
-    $status = $attributes['status'] ?? 'active';
+    $email           = trim($attributes['user_email'] ?? '');
+    $subscriptionId  = $attributes['id'] ?? null;
+    $variantId       = $attributes['variant_id'] ?? null;
+    $status          = $attributes['status'] ?? 'active';
+    $renewsAt        = $attributes['renews_at'] ?? null;       // ISO 8601 z.B. "2026-03-14T23:59:59.000000Z"
+    $endsAt          = $attributes['ends_at'] ?? null;         // bei Kündigung / Ablauf
+    $trialEndsAt     = $attributes['trial_ends_at'] ?? null;
+
+    if (empty($email) || empty($subscriptionId)) {
+        logWebhook('⚠️ subscription_created – fehlende Pflichtfelder', ['email' => $email, 'subscriptionId' => $subscriptionId]);
+        return;
+    }
 
     $plan = determinePlan($variantId);
 
-    logWebhook('✅ SUBSCRIPTION CREATED', compact('email','subscriptionId','plan'));
+    logWebhook('✅ SUBSCRIPTION CREATED', [
+        'email'          => $email,
+        'subscriptionId' => $subscriptionId,
+        'variantId'      => $variantId,
+        'plan'           => $plan,
+        'status'         => $status,
+        'renews_at'      => $renewsAt
+    ]);
 
     $db = getDB();
+
+    // Berechne valid_until – bei recurring Plänen meist renews_at als Obergrenze
+    $validUntil = null;
+    if ($renewsAt) {
+        $dt = new DateTime($renewsAt);
+        $validUntil = $dt->format('Y-m-d');
+    }
+
     $stmt = $db->prepare("
         INSERT INTO subscriptions 
-            (email, plan, status, lemon_subscription_id, created_at)
+        (
+            email, 
+            plan, 
+            status, 
+            lemon_subscription_id, 
+            valid_until,
+            created_at
+        )
         VALUES 
-            (:email, :plan, :status, :sub_id, NOW())
+        (
+            :email, 
+            :plan, 
+            :status, 
+            :sub_id, 
+            :valid_until,
+            NOW()
+        )
         ON DUPLICATE KEY UPDATE
-            plan = :plan,
-            status = :status,
-            lemon_subscription_id = :sub_id,
-            updated_at = NOW()
+            plan                   = :plan,
+            status                 = :status,
+            lemon_subscription_id  = :sub_id,
+            valid_until            = :valid_until,
+            updated_at             = NOW()
     ");
 
     $stmt->execute([
-        'email' => $email,
-        'plan' => $plan,
-        'status' => $status,
-        'sub_id' => $subscriptionId
+        'email'       => $email,
+        'plan'        => $plan,
+        'status'      => $status,
+        'sub_id'      => $subscriptionId,
+        'valid_until' => $validUntil
     ]);
+
+    // Optional: Trial-Status loggen / behandeln
+    if ($trialEndsAt && $status === 'active') {
+        logWebhook('ℹ️  Trial subscription created', ['email' => $email, 'trial_ends_at' => $trialEndsAt]);
+    }
 
     sendWelcomeEmail($email, $plan);
 }
@@ -312,39 +363,53 @@ function handlePaymentRecovered($data) {
 /**
  * Handle one-time order (typically for lifetime purchases)
  */
-function handleOrderCreated($data) {
+/**
+ * Handle one-time purchase (hauptsächlich Lifetime)
+ */
+function handleOrderCreated($data)
+{
     $attributes = $data['attributes'] ?? [];
 
-    $email = $attributes['user_email'] ?? '';
-    $orderId = $attributes['id'] ?? '';
-    $variantId = $attributes['first_order_item']['variant_id'] ?? '';
+    $email     = strtolower(trim($attributes['user_email'] ?? ''));
+    $orderId   = $data['id'] ?? null; // ← FIXED
+    $variantId = $attributes['first_order_item']['variant_id'] ?? null;
+
+    if (!$email || !$orderId || !$variantId) {
+        logWebhook('❌ order_created missing fields', compact('email','orderId','variantId'));
+        return;
+    }
 
     $plan = determinePlan($variantId);
 
-    logWebhook('🛒 ORDER CREATED', compact('email','orderId','plan'));
+    logWebhook('🛒 ORDER CREATED FIXED', [
+        'email' => $email,
+        'orderId' => $orderId,
+        'variantId' => $variantId,
+        'plan' => $plan
+    ]);
 
-    if ($plan === 'lifetime') {
-        $db = getDB();
+    $db = getDB();
 
-        $stmt = $db->prepare("
-            INSERT INTO subscriptions 
-                (email, plan, status, lemon_order_id, created_at)
-            VALUES 
-                (:email, 'lifetime', 'active', :order_id, NOW())
-            ON DUPLICATE KEY UPDATE
-                plan = 'lifetime',
-                status = 'active',
-                lemon_order_id = :order_id,
-                updated_at = NOW()
-        ");
+    $validUntil = ($plan === 'lifetime') ? '9999-12-31' : null;
 
-        $stmt->execute([
-            'email' => $email,
-            'order_id' => $orderId
-        ]);
+    $stmt = $db->prepare("
+        INSERT INTO subscriptions 
+        (email, plan, status, lemon_order_id, valid_until, created_at)
+        VALUES (:email, :plan, 'active', :order_id, :valid_until, NOW())
+        ON DUPLICATE KEY UPDATE
+            plan = :plan,
+            status = 'active',
+            lemon_order_id = :order_id,
+            valid_until = :valid_until,
+            updated_at = NOW()
+    ");
 
-        sendLifetimeWelcomeEmail($email);
-    }
+    $stmt->execute([
+        'email' => $email,
+        'plan' => $plan,
+        'order_id' => $orderId,
+        'valid_until' => $validUntil
+    ]);
 }
 
 
@@ -354,21 +419,20 @@ function handleOrderCreated($data) {
  */
 function handleLicenseKeyCreated($data) {
     $attributes = $data['attributes'] ?? [];
-    
-    $email = $attributes['customer_email'] ?? '';
+
+    $email = strtolower(trim($attributes['user_email'] ?? ''));
     $licenseKey = $attributes['key'] ?? '';
-    $variantId = $attributes['variant_id'] ?? '';
-    
-    $plan = determinePlan($variantId);
-    
-    logWebhook('🔑 LICENSE KEY CREATED', [
+    $productId = $attributes['product_id'] ?? null;
+
+    if (!$email) {
+        logWebhook('❌ license_key_created missing email', $attributes);
+        return;
+    }
+
+    logWebhook('🔑 LICENSE KEY FIXED', [
         'email' => $email,
-        'plan' => $plan,
-        'variant_id' => $variantId
+        'product_id' => $productId
     ]);
-    
-    // TODO: Store license key and send to customer
-    sendLicenseKeyEmail($email, $licenseKey);
 }
 
 // ============================================

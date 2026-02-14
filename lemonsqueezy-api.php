@@ -35,9 +35,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 define('LEMONSQUEEZY_API_URL', 'https://api.lemonsqueezy.com/v1');
 
 // Product variant IDs
-define('VARIANT_MONTHLY', '827000');
-define('VARIANT_YEARLY', '827003');
-define('VARIANT_LIFETIME', '826999');
+define('VARIANT_MONTHLY', '1303449');
+define('VARIANT_YEARLY', '1303454');
+define('VARIANT_LIFETIME', '1303448');
 
 // Checkout URLs
 define('CHECKOUT_MONTHLY', 'https://grammar-mentor.lemonsqueezy.com/checkout/buy/f1ea24e6-4964-46a0-b442-3a659f76ed5a');
@@ -96,10 +96,10 @@ function determinePlan($variantId) {
     $variantId = strval($variantId);
     
     switch ($variantId) {
-        case '826999':
+        case '1303448':
             return 'lifetime';
-        case '827000':   // monthly
-        case '827003':   // yearly
+        case '1303449':   // monthly
+        case '1303454':   // yearly
             return 'pro';
         default:
             return 'free';
@@ -307,7 +307,6 @@ function handleGetConfig() {
         'checkoutUrls' => [
             'monthly' => CHECKOUT_MONTHLY,
             'yearly' => CHECKOUT_YEARLY,
-            '2year' => CHECKOUT_2YEAR,
             'lifetime' => CHECKOUT_LIFETIME
         ],
         'variantIds' => [
