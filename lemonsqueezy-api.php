@@ -179,7 +179,7 @@ function handleGoogleLogin() {
         sendResponse(['success' => false, 'error' => 'Kein ID Token übermittelt'], 400);
     }
 
-    // Google Tokeninfo Endpoint (validiert und gibt User-Info zurück)
+    // Token validieren bei Google
     $url = "https://oauth2.googleapis.com/tokeninfo?id_token=" . urlencode($idToken);
     $response = file_get_contents($url);
     $data = json_decode($response, true);
@@ -188,7 +188,6 @@ function handleGoogleLogin() {
         sendResponse(['success' => false, 'error' => $data['error_description'] ?? 'Ungültiges Token'], 401);
     }
 
-    // Optional: Prüfe audience (deine Client ID)
     if ($data['aud'] !== '321621097003-j12qbjotes9glvohuqbepb2pouol7b7j.apps.googleusercontent.com') {
         sendResponse(['success' => false, 'error' => 'Ungültige Client ID'], 401);
     }
@@ -196,36 +195,67 @@ function handleGoogleLogin() {
     $email = $data['email'] ?? '';
     $name  = $data['name']  ?? explode('@', $email)[0] ?? 'User';
 
-    // Jetzt wie bei deinem email-login: In DB nachschauen
     try {
         $pdo = new PDO("mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=utf8mb4", DB_USER, DB_PASS);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+        // Prüfen, ob Email schon existiert
         $stmt = $pdo->prepare("SELECT plan, status, valid_until FROM subscriptions WHERE email = ? LIMIT 1");
         $stmt->execute([$email]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if ($row && $row['status'] === 'active') {
+        if ($row) {
+            // Bestehender User
+            if ($row['status'] === 'active') {
+                // Pro-User → voller Login-Erfolg
+                sendResponse([
+                    'success'    => true,
+                    'valid'      => true,
+                    'email'      => $email,
+                    'name'       => $name,
+                    'status'     => 'active',
+                    'plan'       => $row['plan'],
+                    'validUntil' => $row['valid_until']
+                ]);
+            } else {
+                // Bestehender User, aber kein aktives Pro → trotzdem einloggen, aber Upgrade vorschlagen
+                sendResponse([
+                    'success'    => true,
+                    'valid'      => true,           // ← wichtig: trotzdem login erlauben!
+                    'email'      => $email,
+                    'name'       => $name,
+                    'status'     => $row['status'],
+                    'plan'       => $row['plan'],
+                    'validUntil' => $row['valid_until'],
+                    'message'    => 'Willkommen zurück! Dein Pro-Status ist nicht aktiv. Upgrade möglich.'
+                ]);
+            }
+        } else {
+            // Neuer User → Account erstellen (als free)
+            $stmt = $pdo->prepare("
+                INSERT INTO subscriptions 
+                (email, plan, status, created_at, updated_at) 
+                VALUES (?, 'free', 'free', NOW(), NOW())
+            ");
+            $stmt->execute([$email]);
+
+            // Optional: In subscribers-Tabelle auch eintragen (falls du die brauchst)
+            // $stmt2 = $pdo->prepare("INSERT IGNORE INTO subscribers (email, subscribed_at) VALUES (?, NOW())");
+            // $stmt2->execute([$email]);
+
             sendResponse([
                 'success'    => true,
                 'valid'      => true,
                 'email'      => $email,
                 'name'       => $name,
-                'status'     => 'active',
-                'plan'       => $row['plan'],
-                'validUntil' => $row['valid_until']
-            ]);
-        } else {
-            // Kein Abo → gib trotzdem Email zurück, Frontend kann upgraden vorschlagen
-            sendResponse([
-                'success' => true,
-                'valid'   => false,
-                'email'   => $email,
-                'name'    => $name,
-                'error'   => 'Kein aktives Pro-Abo gefunden. Upgrade möglich.'
+                'status'     => 'free',
+                'plan'       => 'free',
+                'message'    => 'Willkommen! Dein kostenloser Account wurde erstellt. Upgrade zu Pro jederzeit möglich.'
             ]);
         }
     } catch (PDOException $e) {
-        error_log("DB Fehler: " . $e->getMessage());
-        sendResponse(['success' => false, 'error' => 'Technischer Fehler'], 500);
+        error_log("DB Fehler in handleGoogleLogin: " . $e->getMessage());
+        sendResponse(['success' => false, 'error' => 'Technischer Fehler – bitte versuche es später erneut'], 500);
     }
 }
 
@@ -399,12 +429,13 @@ function handleLoginWithEmail() {
 
     try {
         $pdo = new PDO(
-    "mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=utf8mb4",
-    DB_USER,
-    DB_PASS,
-    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-);
+            "mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=utf8mb4",
+            DB_USER,
+            DB_PASS,
+            [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+        );
 
+        // Prüfen, ob Email schon existiert
         $stmt = $pdo->prepare("
             SELECT plan, status, valid_until 
             FROM subscriptions 
@@ -414,32 +445,44 @@ function handleLoginWithEmail() {
         $stmt->execute([$email]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if ($row && $row['status'] === 'active') {
-            $plan = $row['plan'];
-            $validUntil = $row['valid_until'] 
-                ?? date('Y-m-d', strtotime('+1 year'));  // realistischerer Fallback
+        if ($row) {
+            // Bestehender User → immer login erlauben
+            sendResponse([
+                'success'    => true,
+                'valid'      => true,                      // ← immer true!
+                'email'      => $email,
+                'name'       => explode('@', $email)[0] ?: 'User',
+                'status'     => $row['status'],
+                'plan'       => $row['plan'],
+                'validUntil' => $row['valid_until'] ?? null,
+                'message'    => ($row['status'] === 'active') 
+                    ? 'Willkommen zurück! Pro-Features aktiviert.' 
+                    : 'Willkommen zurück! Du bist auf dem Free-Plan. Upgrade möglich.'
+            ]);
+        } else {
+            // Neuer User → Account erstellen (free)
+            $stmt = $pdo->prepare("
+                INSERT INTO subscriptions 
+                (email, plan, status, created_at, updated_at) 
+                VALUES (?, 'free', 'free', NOW(), NOW())
+            ");
+            $stmt->execute([$email]);
 
             sendResponse([
                 'success'    => true,
                 'valid'      => true,
                 'email'      => $email,
                 'name'       => explode('@', $email)[0] ?: 'User',
-                'status'     => 'active',
-                'plan'       => $plan,
-                'validUntil' => $validUntil
-            ]);
-        } else {
-            sendResponse([
-                'success' => true,
-                'valid'   => false,
-                'error'   => 'There is currently no active Pro subscription associated with this email address. Upgrade now?'
+                'status'     => 'free',
+                'plan'       => 'free',
+                'message'    => 'Willkommen! Dein kostenloser Account wurde erstellt. Upgrade zu Pro jederzeit möglich.'
             ]);
         }
     } catch (PDOException $e) {
         error_log("DB Fehler in login_with_email: " . $e->getMessage());
         sendResponse([
             'success' => false,
-            'error'   => 'Technical error – please try again later'
+            'error'   => 'Technischer Fehler – bitte versuche es später erneut'
         ], 500);
     }
 }
