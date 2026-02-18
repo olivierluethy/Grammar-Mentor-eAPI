@@ -156,6 +156,10 @@ switch ($action) {
         break;
     // ───────────────────────────────────────────────
 
+    case 'google_login':
+        handleGoogleLogin();
+        break;
+
     default:
         sendResponse([
             'success' => false,
@@ -166,6 +170,64 @@ switch ($action) {
 // ============================================
 // ACTION HANDLERS
 // ============================================
+
+function handleGoogleLogin() {
+    $input = json_decode(file_get_contents('php://input'), true);
+    $idToken = $input['id_token'] ?? '';
+
+    if (empty($idToken)) {
+        sendResponse(['success' => false, 'error' => 'Kein ID Token übermittelt'], 400);
+    }
+
+    // Google Tokeninfo Endpoint (validiert und gibt User-Info zurück)
+    $url = "https://oauth2.googleapis.com/tokeninfo?id_token=" . urlencode($idToken);
+    $response = file_get_contents($url);
+    $data = json_decode($response, true);
+
+    if (!$data || isset($data['error'])) {
+        sendResponse(['success' => false, 'error' => $data['error_description'] ?? 'Ungültiges Token'], 401);
+    }
+
+    // Optional: Prüfe audience (deine Client ID)
+    if ($data['aud'] !== '321621097003-j12qbjotes9glvohuqbepb2pouol7b7j.apps.googleusercontent.com') {
+        sendResponse(['success' => false, 'error' => 'Ungültige Client ID'], 401);
+    }
+
+    $email = $data['email'] ?? '';
+    $name  = $data['name']  ?? explode('@', $email)[0] ?? 'User';
+
+    // Jetzt wie bei deinem email-login: In DB nachschauen
+    try {
+        $pdo = new PDO("mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=utf8mb4", DB_USER, DB_PASS);
+        $stmt = $pdo->prepare("SELECT plan, status, valid_until FROM subscriptions WHERE email = ? LIMIT 1");
+        $stmt->execute([$email]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($row && $row['status'] === 'active') {
+            sendResponse([
+                'success'    => true,
+                'valid'      => true,
+                'email'      => $email,
+                'name'       => $name,
+                'status'     => 'active',
+                'plan'       => $row['plan'],
+                'validUntil' => $row['valid_until']
+            ]);
+        } else {
+            // Kein Abo → gib trotzdem Email zurück, Frontend kann upgraden vorschlagen
+            sendResponse([
+                'success' => true,
+                'valid'   => false,
+                'email'   => $email,
+                'name'    => $name,
+                'error'   => 'Kein aktives Pro-Abo gefunden. Upgrade möglich.'
+            ]);
+        }
+    } catch (PDOException $e) {
+        error_log("DB Fehler: " . $e->getMessage());
+        sendResponse(['success' => false, 'error' => 'Technischer Fehler'], 500);
+    }
+}
 
 /**
  * Validate a license key
