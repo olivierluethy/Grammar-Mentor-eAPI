@@ -227,7 +227,7 @@ function handleGoogleLogin() {
                     'status'     => $row['status'],
                     'plan'       => $row['plan'],
                     'validUntil' => $row['valid_until'],
-                    'message'    => 'Willkommen zurück! Dein Pro-Status ist nicht aktiv. Upgrade möglich.'
+                    'message'    => 'Welcome back! Your Pro status is not yet active. Activate it now.'
                 ]);
             }
         } else {
